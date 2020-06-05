@@ -48,13 +48,34 @@ class XpressPersistent(PersistentSolver, XpressDirect):
             self.set_instance(self._pyomo_model, **kwds)
 
     def _remove_constraint(self, solver_con):
-        self._solver_model.delConstraint(solver_con)
+        pyomo_con = self._solver_con_to_pyomo_con_map[solver_con]
+        solver_con_idx = self._pyomo_con_to_con_idx_map[pyomo_con]
+        for temp_con, temp_idx in self._pyomo_con_to_con_idx_map.items():
+            if temp_idx > solver_con_idx:
+                self._pyomo_con_to_con_idx_map[temp_con] -= 1
+        self._con_idx_count -= 1
+        del self._pyomo_con_to_con_idx_map[pyomo_con]
+        self._solver_model.delConstraint(solver_con_idx)
 
-    def _remove_sos_constraint(self, solver_sos_con):
-        self._solver_model.delSOS(solver_sos_con)
+    def _remove_sos_constraint(self, solver_sos):
+        pyomo_con = self._solver_con_to_pyomo_con_map[solver_sos]
+        solver_sos_idx = self._pyomo_sos_to_sos_idx_map[pyomo_con]
+        for temp_sos, temp_idx in self._pyomo_sos_to_sos_idx_map.items():
+            if temp_idx > solver_sos_idx:
+                self._pyomo_sos_to_sos_idx_map[temp_sos] -= 1
+        self._sos_idx_count -= 1
+        del self._pyomo_sos_to_sos_idx_map[pyomo_con]
+        self._solver_model.delSOS(solver_sos_idx)
 
     def _remove_var(self, solver_var):
-        self._solver_model.delVariable(solver_var)
+        pyomo_var = self._solver_var_to_pyomo_var_map[solver_var]
+        solver_var_idx = self._pyomo_var_to_var_idx_map[pyomo_var]
+        for temp_var, temp_idx in self._pyomo_var_to_var_idx_map.items():
+            if temp_idx > solver_var_idx:
+                self._pyomo_var_to_var_idx_map[temp_var] -= 1
+        self._var_idx_count -= 1
+        del self._pyomo_var_to_var_idx_map[pyomo_var]
+        self._solver_model.delVariable(solver_var_idx)
 
     def _warm_start(self):
         XpressDirect._warm_start(self)

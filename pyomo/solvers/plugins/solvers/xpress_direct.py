@@ -42,6 +42,15 @@ def _is_convertable(conv_type,x):
         return False
     return True
 
+class XpressExpr:
+    def __init__(self):
+        self.const = 0.
+        self.linear_var_idx = None
+        self.linear_coef = None
+        self.quad_var_idx_1 = None
+        self.quad_var_idx_2 = None
+        self.quadratic_coef = None
+
 @SolverFactory.register('xpress_direct', doc='Direct python interface to XPRESS')
 class XpressDirect(DirectSolver):
 
@@ -50,9 +59,17 @@ class XpressDirect(DirectSolver):
             kwds['type'] = 'xpress_direct'
         super(XpressDirect, self).__init__(**kwds)
         self._pyomo_var_to_solver_var_map = ComponentMap()
-        self._solver_var_to_pyomo_var_map = ComponentMap()
+        self._solver_var_to_pyomo_var_map = dict()
         self._pyomo_con_to_solver_con_map = dict()
-        self._solver_con_to_pyomo_con_map = ComponentMap()
+        self._solver_con_to_pyomo_con_map = dict()
+
+        self._pyomo_var_to_var_idx_map = ComponentMap()
+        self._var_idx_count = 0
+
+        self._pyomo_con_to_con_idx_map = dict()
+        self._con_idx_count = 0
+        self._pyomo_sos_to_sos_idx_map = dict()
+        self._sos_idx_count = 0
 
         self._name = None
         try:
@@ -91,7 +108,7 @@ class XpressDirect(DirectSolver):
         # There does not seem to be an easy way to get the
         # wallclock time out of xpress, so we will measure it
         # ourselves
-        self._opt_time = None
+        self._wallclock_time = None
 
         # Note: Undefined capabilites default to None
         self._capabilities.linear = True
@@ -143,7 +160,7 @@ class XpressDirect(DirectSolver):
 
         start_time = time.time()
         self._solver_model.solve()
-        self._opt_time = time.time() - start_time
+        self._wallclock_time = time.time() - start_time
 
         self._solver_model.setlogfile('')
         if self._tee:
@@ -159,21 +176,33 @@ class XpressDirect(DirectSolver):
         if (degree is None) or (degree > max_degree):
             raise DegreeError('XpressDirect does not support expressions of degree {0}.'.format(degree))
 
+        new_expr = XpressExpr()
+
         # NOTE: xpress's python interface only allows for expresions
         #       with native numeric types. Others, like numpy.float64,
         #       will cause an exception when constructing expressions
-        if len(repn.linear_vars) > 0:
-            referenced_vars.update(repn.linear_vars)
-            new_expr = self._xpress.Sum(float(coef)*self._pyomo_var_to_solver_var_map[var] for coef,var in zip(repn.linear_coefs, repn.linear_vars))
-        else:
-            new_expr = 0.0
 
-        for coef,(x,y) in zip(repn.quadratic_coefs,repn.quadratic_vars):
-            new_expr += float(coef) * self._pyomo_var_to_solver_var_map[x] * self._pyomo_var_to_solver_var_map[y]
-            referenced_vars.add(x)
-            referenced_vars.add(y)
+        new_expr.const = float(repn.constant)
 
-        new_expr += repn.constant
+        new_expr.linear_var_idx = [ self._pyomo_var_to_var_idx_map[var] for var in repn.linear_vars ]
+        new_expr.linear_coef = [ float(coef) for coef in repn.linear_coefs ]
+
+
+        if len(repn.quadratic_coefs) > 0:
+            new_expr.quadratic_coef = list()
+            new_expr.quad_var_idx_1 = list()
+            new_expr.quad_var_idx_2 = list()
+            for coef,(x,y) in zip(repn.quadratic_coefs,repn.quadratic_vars):
+                idx_1 = self._pyomo_var_to_var_idx_map[x]
+                idx_2 = self._pyomo_var_to_var_idx_map[y]
+                if idx_1 == idx_2:
+                    new_expr.quadratic_coef.append(float(coef))
+                else:
+                    new_expr.quadratic_coef.append(float(coef)/2.)
+                new_expr.quad_var_idx_1.append(idx_1)
+                new_expr.quad_var_idx_2.append(idx_2)
+                referenced_vars.add(x)
+                referenced_vars.add(y)
 
         return new_expr, referenced_vars
 
@@ -207,28 +236,32 @@ class XpressDirect(DirectSolver):
             lb = value(var.value)
             ub = value(var.value)
 
-        xpress_var = self._xpress.var(name=varname, lb=lb, ub=ub, vartype=vartype)
-        self._solver_model.addVariable(xpress_var)
+        self._solver_model.addcols(objx=[0.], mstart=[0,0], mrwind=[], dmatval=[], bdl=[lb], bdu=[ub], names=[varname], types=[vartype])
 
-        ## bounds on binary variables don't seem to be set correctly
-        ## by the method above
-        if vartype == self._xpress.binary:
-            if lb == ub:
-                self._solver_model.chgbounds([xpress_var], ['B'], [lb])
-            else:
-                self._solver_model.chgbounds([xpress_var, xpress_var], ['L', 'U'], [lb,ub])
+        self._pyomo_var_to_solver_var_map[var] = varname 
+        self._solver_var_to_pyomo_var_map[varname] = var
 
-        self._pyomo_var_to_solver_var_map[var] = xpress_var
-        self._solver_var_to_pyomo_var_map[xpress_var] = var
+        self._pyomo_var_to_var_idx_map[var] = self._var_idx_count
+        self._var_idx_count += 1
+
         self._referenced_variables[var] = 0
 
     def _set_instance(self, model, kwds={}):
         self._range_constraints = set()
         DirectOrPersistentSolver._set_instance(self, model, kwds)
         self._pyomo_con_to_solver_con_map = dict()
-        self._solver_con_to_pyomo_con_map = ComponentMap()
+        self._solver_con_to_pyomo_con_map = dict()
         self._pyomo_var_to_solver_var_map = ComponentMap()
-        self._solver_var_to_pyomo_var_map = ComponentMap()
+        self._solver_var_to_pyomo_var_map = dict()
+
+        self._pyomo_var_to_var_idx_map = ComponentMap()
+        self._var_idx_count = 0
+
+        self._pyomo_con_to_con_idx_map = dict()
+        self._con_idx_count = 0
+        self._pyomo_sos_to_sos_idx_map = dict()
+        self._sos_idx_count = 0
+
         try:
             if model.name is not None:
                 self._solver_model = self._xpress.problem(name=model.name)
@@ -275,38 +308,50 @@ class XpressDirect(DirectSolver):
                                  "is not constant.".format(con))
 
         if con.equality:
-            xpress_con = self._xpress.constraint(body=xpress_expr,
-                                                 sense=self._xpress.eq,
-                                                 rhs=value(con.lower),
-                                                 name=conname)
+            rhs = value(con.lower)
+            rhs -= xpress_expr.const
+            self._solver_model.addrows(['E'], [rhs], [0,len(xpress_expr.linear_coef)],
+                                xpress_expr.linear_var_idx, xpress_expr.linear_coef,
+                                names = [conname])
+
         elif con.has_lb() and con.has_ub():
-            xpress_con = self._xpress.constraint(body=xpress_expr,
-                                                 sense=self._xpress.range,
-                                                 lb=value(con.lower),
-                                                 ub=value(con.upper),
-                                                 name=conname)
-            self._range_constraints.add(xpress_con)
+            rhs = value(con.upper)
+            lhs = value(con.lower)
+            rhs -= xpress_expr.const
+            lhs -= xpress_expr.const
+        
+            self._solver_model.addrows(['R'], [rhs], [0,len(xpress_expr.linear_coef)],
+                                xpress_expr.linear_var_idx, xpress_expr.linear_coef,
+                                range=[rhs-lhs], names=[conname])
+
+            self._range_constraints.add(conname)
         elif con.has_lb():
-            xpress_con = self._xpress.constraint(body=xpress_expr,
-                                                 sense=self._xpress.geq,
-                                                 rhs=value(con.lower),
-                                                 name=conname)
+            rhs = value(con.lower)
+            rhs -= xpress_expr.const
+            self._solver_model.addrows(['G'], [rhs], [0,len(xpress_expr.linear_coef)],
+                                xpress_expr.linear_var_idx, xpress_expr.linear_coef,
+                                names = [conname])
         elif con.has_ub():
-            xpress_con = self._xpress.constraint(body=xpress_expr,
-                                                 sense=self._xpress.leq,
-                                                 rhs=value(con.upper),
-                                                 name=conname)
+            rhs = value(con.upper)
+            rhs -= xpress_expr.const
+            self._solver_model.addrows(['L'], [rhs], [0,len(xpress_expr.linear_coef)],
+                                xpress_expr.linear_var_idx, xpress_expr.linear_coef,
+                                names = [conname])
         else:
             raise ValueError("Constraint does not have a lower "
                              "or an upper bound: {0} \n".format(con))
 
-        self._solver_model.addConstraint(xpress_con)
+        if xpress_expr.quadratic_coef is not None:
+            self._solver_model.addqmatrix(self._con_idx_count, xpress_expr.quad_var_idx_1,
+                                     xpress_expr.quad_var_idx_2, xpress_expr.quadratic_coef)
 
         for var in referenced_vars:
             self._referenced_variables[var] += 1
         self._vars_referenced_by_con[con] = referenced_vars
-        self._pyomo_con_to_solver_con_map[con] = xpress_con
-        self._solver_con_to_pyomo_con_map[xpress_con] = con
+        self._pyomo_con_to_solver_con_map[con] = conname 
+        self._solver_con_to_pyomo_con_map[conname] = con
+        self._pyomo_con_to_con_idx_map[con] = self._con_idx_count
+        self._con_idx_count += 1
 
     def _add_sos_constraint(self, con):
         if not con.active:
@@ -332,27 +377,30 @@ class XpressDirect(DirectSolver):
 
         for v, w in sos_items:
             self._vars_referenced_by_con[con].add(v)
-            xpress_vars.append(self._pyomo_var_to_solver_var_map[v])
+            xpress_vars.append(self._pyomo_var_to_var_idx_map[v])
             self._referenced_variables[v] += 1
             weights.append(w)
 
         xpress_con = self._xpress.sos(xpress_vars, weights, level, conname)
         self._solver_model.addSOS(xpress_con)
-        self._pyomo_con_to_solver_con_map[con] = xpress_con
-        self._solver_con_to_pyomo_con_map[xpress_con] = con
+        self._pyomo_con_to_solver_con_map[con] = conname 
+        self._solver_con_to_pyomo_con_map[conname] = con
+        self._pyomo_sos_to_sos_idx_map[con] = self._sos_idx_count
+        self._sos_idx_count += 1
 
     def _xpress_vartype_from_var(self, var):
         """
         This function takes a pyomo variable and returns the appropriate xpress variable type
+        for use in xpress.problem.addcols
         :param var: pyomo.core.base.var.Var
         :return: xpress.continuous or xpress.binary or xpress.integer
         """
         if var.is_binary():
-            vartype = self._xpress.binary
+            vartype = 'B'
         elif var.is_integer():
-            vartype = self._xpress.integer
+            vartype = 'I'
         elif var.is_continuous():
-            vartype = self._xpress.continuous
+            vartype = 'C'
         else:
             raise ValueError('Variable domain type is not recognized for {0}'.format(var.domain))
         return vartype
@@ -379,7 +427,11 @@ class XpressDirect(DirectSolver):
         for var in referenced_vars:
             self._referenced_variables[var] += 1
 
-        self._solver_model.setObjective(xpress_expr, sense=sense)
+        self._solver_model.chgobj(xpress_expr.linear_var_idx+[-1], xpress_expr.linear_coef+[xpress_expr.const])
+        if xpress_expr.quadratic_coef is not None:
+            self._solver_model.chgmqobj(xpress_expr.quad_var_idx_1, xpress_expr.quad_var_idx_2, \
+                                        [2.*val for val in xpress_expr.quadratic_coef])
+        self._solver_model.chgobjsense(sense)
         self._objective = obj
         self._vars_referenced_by_obj = referenced_vars
 
@@ -426,7 +478,7 @@ class XpressDirect(DirectSolver):
         soln = Solution()
 
         self.results.solver.name = self._name
-        self.results.solver.wallclock_time = self._opt_time
+        self.results.solver.wallclock_time = self._wallclock_time
 
         if is_mip:
             status = xprob_attrs.mipstatus
@@ -604,35 +656,44 @@ class XpressDirect(DirectSolver):
                 soln_variables = soln.variable
                 soln_constraints = soln.constraint
 
-                xpress_vars = list(self._solver_var_to_pyomo_var_map.keys())
-                var_vals = xprob.getSolution(xpress_vars)
-                for xpress_var, val in zip(xpress_vars, var_vals):
-                    pyomo_var = self._solver_var_to_pyomo_var_map[xpress_var]
+                var_vals = xprob.getSolution()
+                var_names = xprob.getnamelist(2)
+                for var_n, val in zip(var_names, var_vals):
+                    pyomo_var = self._solver_var_to_pyomo_var_map[var_n]
                     if self._referenced_variables[pyomo_var] > 0:
                         pyomo_var.stale = False
-                        soln_variables[xpress_var.name] = {"Value": val}
+                        soln_variables[var_n] = {"Value": val}
 
                 if extract_reduced_costs:
-                    vals = xprob.getRCost(xpress_vars)
-                    for xpress_var, val in zip(xpress_vars, vals):
-                        pyomo_var = self._solver_var_to_pyomo_var_map[xpress_var]
+                    rc_vals = xprob.getRCost()
+                    for var_n, val in zip(var_names, rc_vals):
+                        pyomo_var = self._solver_var_to_pyomo_var_map[var_n]
                         if self._referenced_variables[pyomo_var] > 0:
-                            soln_variables[xpress_var.name]["Rc"] = val
+                            soln_variables[var_n]["Rc"] = val
 
                 if extract_duals or extract_slacks:
-                    xpress_cons = list(self._solver_con_to_pyomo_con_map.keys())
-                    for con in xpress_cons:
-                        soln_constraints[con.name] = {}
+                    if self._pyomo_con_to_con_idx_map:
+                        con_names = xprob.getnamelist(1)
+                        for con in con_names:
+                            soln_constraints[con] = {}
+                    else:
+                        con_names = list()
+                    if self._pyomo_sos_to_sos_idx_map: 
+                        sos_names = xprob.getnamelist(3)
+                        for con in sos_names:
+                            soln_constraints[con] = {}
+                        con_names.extend(sos_names)
 
                 if extract_duals:
-                    vals = xprob.getDual(xpress_cons)
-                    for val, con in zip(vals, xpress_cons):
-                        soln_constraints[con.name]["Dual"] = val
+                    vals = xprob.getDual()
+                    for val, con in zip(vals, con_names):
+                        soln_constraints[con]["Dual"] = val
 
                 if extract_slacks:
-                    vals = xprob.getSlack(xpress_cons)
-                    for con, val in zip(xpress_cons, vals):
+                    vals = xprob.getSlack()
+                    for idx, (con, val) in enumerate(zip(con_names, vals)):
                         if con in self._range_constraints:
+                            con = xprob.getConstraint(idx)
                             ## for xpress, the slack on a range constraint
                             ## is based on the upper bound
                             lb = con.lb
@@ -645,7 +706,7 @@ class XpressDirect(DirectSolver):
                             else:
                                 soln_constraints[con.name]["Slack"] = lb_s
                         else:
-                            soln_constraints[con.name]["Slack"] = val
+                            soln_constraints[con]["Slack"] = val
 
         elif self._load_solutions:
             if xprob_attrs.lpstatus == xp.lp_optimal and \
@@ -675,14 +736,14 @@ class XpressDirect(DirectSolver):
     def _warm_start(self):
         mipsolval = list()
         mipsolcol = list()
-        for pyomo_var, xpress_var in self._pyomo_var_to_solver_var_map.items():
+        for pyomo_var, xpress_var in self._pyomo_var_to_var_idx_map.items():
             if pyomo_var.value is not None:
                 mipsolval.append(value(pyomo_var))
                 mipsolcol.append(xpress_var)
         self._solver_model.addmipsol(mipsolval, mipsolcol)
 
     def _load_vars(self, vars_to_load=None):
-        var_map = self._pyomo_var_to_solver_var_map
+        var_map = self._pyomo_var_to_var_idx_map
         ref_vars = self._referenced_variables
         if vars_to_load is None:
             vars_to_load = var_map.keys()
@@ -698,7 +759,7 @@ class XpressDirect(DirectSolver):
     def _load_rc(self, vars_to_load=None):
         if not hasattr(self._pyomo_model, 'rc'):
             self._pyomo_model.rc = Suffix(direction=Suffix.IMPORT)
-        var_map = self._pyomo_var_to_solver_var_map
+        var_map = self._pyomo_var_to_var_idx_map
         ref_vars = self._referenced_variables
         rc = self._pyomo_model.rc
         if vars_to_load is None:
@@ -740,6 +801,7 @@ class XpressDirect(DirectSolver):
 
         for pyomo_con, xpress_con, val in zip(cons_to_load, xpress_cons_to_load, vals):
             if xpress_con in self._range_constraints:
+                xpress_con = self._solver_model.getConstraint(xpress_con)
                 ## for xpress, the slack on a range constraint
                 ## is based on the upper bound
                 lb = con.lb
