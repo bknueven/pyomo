@@ -192,9 +192,11 @@ class XpressDirect(DirectSolver):
         #       will cause an exception when constructing expressions
 
         new_expr.const = float(repn.constant)
-
         new_expr.linear_var_idx = [ self._pyomo_var_to_var_idx_map[var] for var in repn.linear_vars ]
         new_expr.linear_coef = [ float(coef) for coef in repn.linear_coefs ]
+
+        if len(repn.linear_vars) > 0:
+            referenced_vars.update(repn.linear_vars)
 
         if len(repn.quadratic_coefs) > 0:
             new_expr.quadratic_coef = list()
@@ -352,6 +354,7 @@ class XpressDirect(DirectSolver):
 
         for var in referenced_vars:
             self._referenced_variables[var] += 1
+
         self._vars_referenced_by_con[con] = referenced_vars
         self._pyomo_con_to_solver_con_map[con] = conname 
         self._solver_con_to_pyomo_con_map[conname] = con
