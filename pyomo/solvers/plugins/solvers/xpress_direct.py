@@ -51,6 +51,11 @@ class XpressExpr:
         self.quad_var_idx_2 = None
         self.quadratic_coef = None
 
+def _print_message(xp_prob, _, msg, *args):
+    if msg is not None:
+        sys.stdout.write(msg+'\n')
+        sys.stdout.flush()
+
 @SolverFactory.register('xpress_direct', doc='Direct python interface to XPRESS')
 class XpressDirect(DirectSolver):
 
@@ -135,18 +140,22 @@ class XpressDirect(DirectSolver):
         # setting a log file in xpress disables all output
         # this callback prints all messages to stdout
         if self._tee:
-            def _print_message(xp_prob, _, msg, *args):
-                if msg is not None:
-                    sys.stdout.write(msg+'\n')
-                    sys.stdout.flush()
             self._solver_model.addcbmessage(_print_message, None, 0)
 
         # set xpress options
+        # if the user specifies a 'mipgap', set it, and
+        # set xpress's related options to 0.
+        if self.options.mipgap is not None:
+            self._solver_model.setControl('miprelstop', float(self.options.mipgap))
+            self._solver_model.setControl('miprelcutoff', 0.0)
+            self._solver_model.setControl('mipaddcutoff', 0.0)
         # xpress is picky about the type which is passed
         # into a control. So we will infer and cast
         # get the xpress valid controls
         xp_controls = self._xpress.controls
         for key, option in self.options.items():
+            if key == 'mipgap': # handled above
+                continue
             try: 
                 self._solver_model.setControl(key, option)
             except self._XpressException:
