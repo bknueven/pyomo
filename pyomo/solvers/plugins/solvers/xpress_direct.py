@@ -196,7 +196,6 @@ class XpressDirect(DirectSolver):
         new_expr.linear_var_idx = [ self._pyomo_var_to_var_idx_map[var] for var in repn.linear_vars ]
         new_expr.linear_coef = [ float(coef) for coef in repn.linear_coefs ]
 
-
         if len(repn.quadratic_coefs) > 0:
             new_expr.quadratic_coef = list()
             new_expr.quad_var_idx_1 = list()
@@ -204,10 +203,11 @@ class XpressDirect(DirectSolver):
             for coef,(x,y) in zip(repn.quadratic_coefs,repn.quadratic_vars):
                 idx_1 = self._pyomo_var_to_var_idx_map[x]
                 idx_2 = self._pyomo_var_to_var_idx_map[y]
-                if idx_1 == idx_2:
-                    new_expr.quadratic_coef.append(float(coef))
-                else:
-                    new_expr.quadratic_coef.append(float(coef)/2.)
+                #if idx_1 == idx_2:
+                #    new_expr.quadratic_coef.append(float(coef))
+                #else:
+                #    new_expr.quadratic_coef.append(float(coef)/2.)
+                new_expr.quadratic_coef.append(float(coef))
                 new_expr.quad_var_idx_1.append(idx_1)
                 new_expr.quad_var_idx_2.append(idx_2)
                 referenced_vars.add(x)
@@ -317,40 +317,36 @@ class XpressDirect(DirectSolver):
                                  "is not constant.".format(con))
 
         if con.equality:
-            rhs = value(con.lower)
-            rhs -= xpress_expr.const
-            self._solver_model.addrows(['E'], [rhs], [0,len(xpress_expr.linear_coef)],
-                                xpress_expr.linear_var_idx, xpress_expr.linear_coef,
-                                names = [conname])
-
+            rhs = value(con.lower) - xpress_expr.const
+            sense = 'E'
+            _range = None
         elif con.has_lb() and con.has_ub():
-            rhs = value(con.upper)
-            lhs = value(con.lower)
-            rhs -= xpress_expr.const
-            lhs -= xpress_expr.const
-        
-            self._solver_model.addrows(['R'], [rhs], [0,len(xpress_expr.linear_coef)],
-                                xpress_expr.linear_var_idx, xpress_expr.linear_coef,
-                                range=[rhs-lhs], names=[conname])
-
+            sense = 'R'
+            ub = value(con.upper)
+            lb = value(con.lower)
+            rhs = ub - xpress_expr.const
+            _range = [lb - ub]
             self._range_constraints.add(conname)
         elif con.has_lb():
-            rhs = value(con.lower)
-            rhs -= xpress_expr.const
-            self._solver_model.addrows(['G'], [rhs], [0,len(xpress_expr.linear_coef)],
-                                xpress_expr.linear_var_idx, xpress_expr.linear_coef,
-                                names = [conname])
+            rhs = value(con.lower) - xpress_expr.const
+            sense = 'G'
+            _range = None
         elif con.has_ub():
-            rhs = value(con.upper)
-            rhs -= xpress_expr.const
-            self._solver_model.addrows(['L'], [rhs], [0,len(xpress_expr.linear_coef)],
-                                xpress_expr.linear_var_idx, xpress_expr.linear_coef,
-                                names = [conname])
+            rhs = value(con.upper) - xpress_expr.const
+            sense = 'L'
+            _range = None
         else:
             raise ValueError("Constraint does not have a lower "
                              "or an upper bound: {0} \n".format(con))
 
+
+        self._solver_model.addrows([sense], [rhs], [0,len(xpress_expr.linear_coef)],
+                                xpress_expr.linear_var_idx, xpress_expr.linear_coef,
+                                range=_range, names=[conname]) 
+
         if xpress_expr.quadratic_coef is not None:
+            if sense in ['R', 'E']:
+                raise RuntimeError("XpressDirect does not support range or equality quadratic constraints.")
             self._solver_model.addqmatrix(self._con_idx_count, xpress_expr.quad_var_idx_1,
                                      xpress_expr.quad_var_idx_2, xpress_expr.quadratic_coef)
 
@@ -438,11 +434,11 @@ class XpressDirect(DirectSolver):
 
         # this resets the objective
         self._solver_model.setObjective(0, sense=sense)
-
         self._solver_model.chgobj(xpress_expr.linear_var_idx+[-1], xpress_expr.linear_coef+[xpress_expr.const])
         if xpress_expr.quadratic_coef is not None:
             self._solver_model.chgmqobj(xpress_expr.quad_var_idx_1, xpress_expr.quad_var_idx_2, \
                                         [2.*val for val in xpress_expr.quadratic_coef])
+
         self._objective = obj
         self._vars_referenced_by_obj = referenced_vars
 

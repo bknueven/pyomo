@@ -33,7 +33,7 @@ class TestXpressPersistent(unittest.TestCase):
 
         m.obj.expr = m.y
         opt.set_objective(m.obj)
-        res = opt.solve(tee=True)
+        res = opt.solve()
         self.assertAlmostEqual(m.x.value, -10)
         self.assertAlmostEqual(m.y.value, -19)
 
