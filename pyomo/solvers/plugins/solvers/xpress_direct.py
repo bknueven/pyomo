@@ -436,11 +436,13 @@ class XpressDirect(DirectSolver):
         for var in referenced_vars:
             self._referenced_variables[var] += 1
 
+        # this resets the objective
+        self._solver_model.setObjective(0, sense=sense)
+
         self._solver_model.chgobj(xpress_expr.linear_var_idx+[-1], xpress_expr.linear_coef+[xpress_expr.const])
         if xpress_expr.quadratic_coef is not None:
             self._solver_model.chgmqobj(xpress_expr.quad_var_idx_1, xpress_expr.quad_var_idx_2, \
                                         [2.*val for val in xpress_expr.quadratic_coef])
-        self._solver_model.chgobjsense(sense)
         self._objective = obj
         self._vars_referenced_by_obj = referenced_vars
 
