@@ -205,11 +205,11 @@ class XpressDirect(DirectSolver):
             for coef,(x,y) in zip(repn.quadratic_coefs,repn.quadratic_vars):
                 idx_1 = self._pyomo_var_to_var_idx_map[x]
                 idx_2 = self._pyomo_var_to_var_idx_map[y]
-                #if idx_1 == idx_2:
-                #    new_expr.quadratic_coef.append(float(coef))
-                #else:
-                #    new_expr.quadratic_coef.append(float(coef)/2.)
-                new_expr.quadratic_coef.append(float(coef))
+                if idx_1 == idx_2:
+                    new_expr.quadratic_coef.append(float(coef))
+                else:
+                    new_expr.quadratic_coef.append(float(coef)/2.)
+                #new_expr.quadratic_coef.append(float(coef))
                 new_expr.quad_var_idx_1.append(idx_1)
                 new_expr.quad_var_idx_2.append(idx_2)
                 referenced_vars.add(x)
@@ -440,6 +440,7 @@ class XpressDirect(DirectSolver):
         self._solver_model.chgobj(xpress_expr.linear_var_idx+[-1], xpress_expr.linear_coef+[xpress_expr.const])
         if xpress_expr.quadratic_coef is not None:
             self._solver_model.chgmqobj(xpress_expr.quad_var_idx_1, xpress_expr.quad_var_idx_2, \
+                                        #xpress_expr.quadratic_coef)
                                         [2.*val for val in xpress_expr.quadratic_coef])
 
         self._objective = obj
