@@ -180,7 +180,7 @@ class XpressDirect(DirectSolver):
         # FIXME: can we get a return code indicating if XPRESS had a significant failure?
         return Bunch(rc=None, log=None)
 
-    def _get_expr_from_pyomo_repn(self, repn, max_degree=2):
+    def _get_expr_from_pyomo_repn(self, repn, max_degree=2, objective=False):
         referenced_vars = ComponentSet()
 
         degree = repn.polynomial_degree()
@@ -202,19 +202,36 @@ class XpressDirect(DirectSolver):
             x_quad_var_1 = list()
             x_quad_var_2 = list()
             x_quad_coefs = list()
-            for coef,(x,y) in zip(repn.quadratic_coefs,repn.quadratic_vars):
-                idx_1 = pyomo_var_to_var_idx_map[x]
-                idx_2 = pyomo_var_to_var_idx_map[y]
-                x_quad_var_1.append(idx_1)
-                x_quad_var_2.append(idx_2)
-                referenced_vars.add(x)
-                referenced_vars.add(y)
+            if not objective:
+                for coef,(x,y) in zip(repn.quadratic_coefs,repn.quadratic_vars):
+                    idx_1 = pyomo_var_to_var_idx_map[x]
+                    idx_2 = pyomo_var_to_var_idx_map[y]
+                    x_quad_var_1.append(idx_1)
+                    x_quad_var_2.append(idx_2)
+                    referenced_vars.add(x)
+                    referenced_vars.add(y)
 
-                # NOTE: xpress wants these ... TODO: finish
-                if idx_1 == idx_2:
-                    x_quad_coefs.append(float(coef))
-                else:
-                    x_quad_coefs.append(float(coef)/2.)
+                    # NOTE: xpress wants only half of the triangle,
+                    #       so these need to be adjusted
+                    if idx_1 == idx_2:
+                        x_quad_coefs.append(float(coef))
+                    else:
+                        x_quad_coefs.append(float(coef)/2.)
+            else:
+                for coef,(x,y) in zip(repn.quadratic_coefs,repn.quadratic_vars):
+                    idx_1 = pyomo_var_to_var_idx_map[x]
+                    idx_2 = pyomo_var_to_var_idx_map[y]
+                    x_quad_var_1.append(idx_1)
+                    x_quad_var_2.append(idx_2)
+                    referenced_vars.add(x)
+                    referenced_vars.add(y)
+
+                    # NOTE: xpress wants only half of the triangle,
+                    #       so these need to be adjusted
+                    if idx_1 == idx_2:
+                        x_quad_coefs.append(2.*float(coef))
+                    else:
+                        x_quad_coefs.append(float(coef))
 
             new_expr = _XpressExpr( x_const, x_linear_vars, x_linear_coefs,
                                     x_quad_var_1, x_quad_var_2, x_quad_coefs )
@@ -223,14 +240,14 @@ class XpressDirect(DirectSolver):
 
         return new_expr, referenced_vars
 
-    def _get_expr_from_pyomo_expr(self, expr, max_degree=2):
+    def _get_expr_from_pyomo_expr(self, expr, max_degree=2, objective=False):
         if max_degree == 2:
             repn = generate_standard_repn(expr, quadratic=True)
         else:
             repn = generate_standard_repn(expr, quadratic=False)
 
         try:
-            xpress_expr, referenced_vars = self._get_expr_from_pyomo_repn(repn, max_degree)
+            xpress_expr, referenced_vars = self._get_expr_from_pyomo_repn(repn, max_degree, objective)
         except DegreeError as e:
             msg = e.args[0]
             msg += '\nexpr: {0}'.format(expr)
@@ -449,7 +466,8 @@ class XpressDirect(DirectSolver):
         else:
             raise ValueError('Objective sense is not recognized: {0}'.format(obj.sense))
 
-        xpress_expr, referenced_vars = self._get_expr_from_pyomo_expr(obj.expr, self._max_obj_degree)
+        xpress_expr, referenced_vars = self._get_expr_from_pyomo_expr(obj.expr, self._max_obj_degree,
+                                                                        objective=True)
 
         for var in referenced_vars:
             self._referenced_variables[var] += 1
@@ -459,7 +477,7 @@ class XpressDirect(DirectSolver):
         self._solver_model.chgobj(xpress_expr.linear_vars+[-1], xpress_expr.linear_coefs+[xpress_expr.constant])
         if xpress_expr.quad_coefs is not None:
             self._solver_model.chgmqobj(xpress_expr.quad_vars_1, xpress_expr.quad_vars_2, \
-                                        [2.*coef for coef in xpress_expr.quad_coefs])
+                                        xpress_expr.quad_coefs)
 
         self._objective = obj
         self._vars_referenced_by_obj = referenced_vars
@@ -701,30 +719,33 @@ class XpressDirect(DirectSolver):
                             soln_variables[xpress_var]["Rc"] = val
 
                 if extract_duals or extract_slacks:
-                    xpress_cons = xprob.getConstraint()
-                    for con in xpress_cons:
-                        soln_constraints[con.name] = {}
+                    if self._pyomo_con_to_con_idx_map:
+                        con_names = xprob.getnamelist(1)
+                    else:
+                        con_names = list()
+                    for con in con_names:
+                        soln_constraints[con] = {}
 
                 if extract_duals:
-                    vals = xprob.getDual(xpress_cons)
-                    for val, con in zip(vals, xpress_cons):
-                        soln_constraints[con.name]["Dual"] = val
+                    vals = xprob.getDual()
+                    for con, val in zip(con_names, vals):
+                        soln_constraints[con]["Dual"] = val
 
                 if extract_slacks:
-                    vals = xprob.getSlack(xpress_cons)
-                    for con, val in zip(xpress_cons, vals):
-                        if con.name in self._range_constraints:
+                    vals = xprob.getSlack()
+                    for con, val in zip(con_names, vals):
+                        if con in self._range_constraints:
                             ## for xpress, the slack on a range constraint
                             ## is based on the upper bound
-                            x_range = self._x_range[con.name]
+                            x_range = self._x_range[con]
                             ub_s = val
                             lb_s = val - x_range
                             if abs(ub_s) > abs(lb_s):
-                                soln_constraints[con.name]["Slack"] = ub_s
+                                soln_constraints[con]["Slack"] = ub_s
                             else:
-                                soln_constraints[con.name]["Slack"] = lb_s
+                                soln_constraints[con]["Slack"] = lb_s
                         else:
-                            soln_constraints[con.name]["Slack"] = val
+                            soln_constraints[con]["Slack"] = val
 
         elif self._load_solutions:
             if xprob_attrs.lpstatus == xp.lp_optimal and \
@@ -761,7 +782,7 @@ class XpressDirect(DirectSolver):
         self._solver_model.addmipsol(mipsolval, mipsolcol)
 
     def _load_vars(self, vars_to_load=None):
-        var_map = self._pyomo_var_to_solver_var_map
+        var_map = self._pyomo_var_to_var_idx_map
         ref_vars = self._referenced_variables
         if vars_to_load is None:
             vars_to_load = var_map.keys()
@@ -777,7 +798,7 @@ class XpressDirect(DirectSolver):
     def _load_rc(self, vars_to_load=None):
         if not hasattr(self._pyomo_model, 'rc'):
             self._pyomo_model.rc = Suffix(direction=Suffix.IMPORT)
-        var_map = self._pyomo_var_to_solver_var_map
+        var_map = self._pyomo_var_to_var_idx_map
         ref_vars = self._referenced_variables
         rc = self._pyomo_model.rc
         if vars_to_load is None:
@@ -793,7 +814,7 @@ class XpressDirect(DirectSolver):
     def _load_duals(self, cons_to_load=None):
         if not hasattr(self._pyomo_model, 'dual'):
             self._pyomo_model.dual = Suffix(direction=Suffix.IMPORT)
-        con_map = self._pyomo_con_to_solver_con_map
+        con_map = self._pyomo_con_to_con_idx_map
         dual = self._pyomo_model.dual
 
         if cons_to_load is None:
@@ -808,7 +829,7 @@ class XpressDirect(DirectSolver):
     def _load_slacks(self, cons_to_load=None):
         if not hasattr(self._pyomo_model, 'slack'):
             self._pyomo_model.slack = Suffix(direction=Suffix.IMPORT)
-        con_map = self._pyomo_con_to_solver_con_map
+        con_map = self._pyomo_con_to_con_idx_map
         slack = self._pyomo_model.slack
 
         if cons_to_load is None:
@@ -816,16 +837,15 @@ class XpressDirect(DirectSolver):
 
         xpress_cons_to_load = [con_map[pyomo_con] for pyomo_con in cons_to_load]
         vals = self._solver_model.getSlack(xpress_cons_to_load)
+        range_constraints = self._range_constraints
 
         for pyomo_con, xpress_con, val in zip(cons_to_load, xpress_cons_to_load, vals):
-            if xpress_con in self._range_constraints:
+            if xpress_con in range_constraints:
                 ## for xpress, the slack on a range constraint
                 ## is based on the upper bound
-                lb = con.lb
-                ub = con.ub
+                x_range = self._x_range[con]
                 ub_s = val
-                expr_val = ub-ub_s
-                lb_s = lb-expr_val
+                lb_s = val - x_range
                 if abs(ub_s) > abs(lb_s):
                     slack[pyomo_con] = ub_s
                 else:
