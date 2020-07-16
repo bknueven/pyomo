@@ -31,14 +31,26 @@ class TestXpressPersistent(unittest.TestCase):
         self.assertAlmostEqual(m.dual[m.c1], -0.4)
         del m.dual
 
+        m.obj.expr = -m.y+1
+        m.obj.sense = pe.maximize
+        opt.set_objective(m.obj)
+        res = opt.solve()
+        self.assertAlmostEqual(m.x.value, -10)
+        self.assertAlmostEqual(m.y.value, -19)
+        self.assertAlmostEqual(res.problem.upper_bound, 20) 
+
+        m.obj.expr = m.x**2 + m.y**2
+        m.obj.sense = pe.minimize
+        opt.set_objective(m.obj)
+
         m.c2 = pe.Constraint(expr=m.y >= -m.x + 1)
         opt.add_constraint(m.c2)
         self.assertEqual(opt.get_xpress_attribute('cols'), 2)
         self.assertEqual(opt.get_xpress_attribute('rows'), 2)
 
         res = opt.solve(save_results=False, load_solutions=False)
-        self.assertAlmostEqual(m.x.value, -0.4)
-        self.assertAlmostEqual(m.y.value, 0.2)
+        self.assertAlmostEqual(m.x.value, -10)
+        self.assertAlmostEqual(m.y.value, -19)
         opt.load_vars()
         self.assertAlmostEqual(m.x.value, 0, delta=1e-6)
         self.assertAlmostEqual(m.y.value, 1, delta=2e-6)
@@ -59,7 +71,7 @@ class TestXpressPersistent(unittest.TestCase):
         opt.update_var(m.x)
         # a nice wrapper for xpress isn't implemented,
         # so we'll do this directly
-        x_idx = opt._solver_model.getIndex(opt._pyomo_var_to_solver_var_map[m.x])
+        x_idx = opt._pyomo_var_to_var_idx_map[m.x]
         lb = []
         opt._solver_model.getlb(lb, x_idx, x_idx)
         ub = []
