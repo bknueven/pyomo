@@ -923,7 +923,7 @@ class XpressDirect(DirectSolver):
     def _warm_start(self):
         mipsolval = list()
         mipsolcol = list()
-        for pyomo_var, xpress_var in self._pyomo_var_to_solver_var_map.items():
+        for pyomo_var, xpress_var in self._pyomo_var_to_var_idx_map.items():
             if pyomo_var.value is not None:
                 mipsolval.append(value(pyomo_var))
                 mipsolcol.append(xpress_var)
