@@ -35,7 +35,7 @@ logger = logging.getLogger('pyomo.solvers')
 class DegreeError(ValueError):
     pass
 
-class _XpressExpr:
+class _XpressExpr(object):
     def __init__(self, constant=0, linear_vars=None, linear_coefs=None,
             quad_vars_1=None, quad_vars_2=None, quad_coefs=None):
         self.constant = constant
@@ -44,6 +44,89 @@ class _XpressExpr:
         self.quad_vars_1 = quad_vars_1
         self.quad_vars_2 = quad_vars_2
         self.quad_coefs = quad_coefs
+
+class _VariableData(object):
+    def __init__(self):
+        self.lb = list()
+        self.ub = list()
+        self.types = list()
+        self.names = list()
+
+        self.chgbounds_vals = list()
+        self.chgbounds_type = list()
+        self.chgbounds_idx = list()
+
+    def add(self, lb, ub, vartype, name, idx):
+        self.lb.append(lb)
+        self.ub.append(ub)
+        self.types.append(vartype)
+        self.names.append(name)
+
+        if vartype == 'B' and (lb > 0 or ub < 1):
+            if lb == ub:
+                self.chgbounds_vals.append(lb)
+                self.chgbounds_type.append('B')
+                self.chgbounds_idx.append(idx)
+            else:
+                self.chgbounds_vals.append(lb)
+                self.chgbounds_vals.append(ub)
+                self.chgbounds_type.append('L')
+                self.chgbounds_type.append('U')
+                self.chgbounds_idx.append(idx)
+                self.chgbounds_idx.append(idx)
+
+    def store_in_xpress(self, solver_model):
+        objx = [0.]*len(self.types)
+        mstart = [0]*(len(self.types)+1)
+        solver_model.addcols(objx=objx, mstart=mstart, mrwind=[], dmatval=[],
+                                    bdl=self.lb, bdu=self.ub, names=self.names, types=self.types)
+
+        ## bounds on binary variables don't seem to be set correctly
+        ## by the method above
+        if len(self.chgbounds_vals) > 0:
+            solver_model.chgbounds(self.chgbounds_idx, self.chgbounds_type, self.chgbounds_vals)
+
+
+class _ConstraintData(object):
+    def __init__(self, solver_model):
+        self._solver_model = solver_model
+        self.sense = list()
+        self.rhs = list()
+        self.mstart = [0]
+        self.mclind = list()
+        self.dmatval = list()
+        self.range = list()
+        self.names = list()
+
+        self.q_idxs = list()
+        self.q_vars1 = list()
+        self.q_vars2 = list()
+        self.q_coefs = list()
+
+    def add(self, sense, rhs, linear_vars, linear_coefs, conname, x_range=0.,
+            q_idx=None, q_var1=None, q_var2=None, q_coef=None):
+        self.sense.append(sense)
+        self.rhs.append(rhs)
+        self.mclind.extend(linear_vars)
+        self.dmatval.extend(linear_coefs)
+        self.names.append(conname)
+        self.range.append(x_range)
+        self.mstart.append(len(self.mclind))
+
+        if q_idx is not None:
+            self.q_idxs.append(q_idx)
+            self.q_vars1.append(q_var1)
+            self.q_vars2.append(q_var2)
+            self.q_coefs.append(q_coef)
+
+    def store_in_xpress(self):
+        if len(self.mstart) <= 1:
+            return
+        solver_model = self._solver_model
+        solver_model.addrows(self.sense, self.rhs, self.mstart, self.mclind,
+                self.dmatval, range=self.range, names=self.names)
+        for idx, var1, var2, coef in zip(self.q_idxs, self.q_vars1, self.q_vars2, self.q_coefs):
+            solver_model.addqmatrix(idx, var1, var2, coef)
 
 def _is_convertable(conv_type,x):
     try:
@@ -192,7 +275,7 @@ class XpressDirect(DirectSolver):
         #       will cause an exception when constructing expressions
         pyomo_var_to_var_idx_map = self._pyomo_var_to_var_idx_map
         x_linear_vars = [pyomo_var_to_var_idx_map[var] for var in repn.linear_vars]
-        x_linear_coefs = [float(coef) for coef in repn.linear_coefs] 
+        x_linear_coefs = [float(coef) for coef in repn.linear_coefs]
         x_const = float(repn.constant)
 
         if len(repn.linear_vars) > 0:
@@ -236,7 +319,7 @@ class XpressDirect(DirectSolver):
             new_expr = _XpressExpr( x_const, x_linear_vars, x_linear_coefs,
                                     x_quad_var_1, x_quad_var_2, x_quad_coefs )
         else:
-            new_expr = _XpressExpr( x_const, x_linear_vars, x_linear_coefs)
+            new_expr = _XpressExpr( x_const, x_linear_vars, x_linear_coefs )
 
         return new_expr, referenced_vars
 
@@ -255,7 +338,7 @@ class XpressDirect(DirectSolver):
 
         return xpress_expr, referenced_vars
 
-    def _add_var(self, var):
+    def _add_var(self, var, var_data=None):
         varname = self._symbol_map.getSymbol(var, self._labeler)
         vartype = self._xpress_vartype_from_var(var)
         if var.has_lb():
@@ -270,16 +353,28 @@ class XpressDirect(DirectSolver):
             lb = value(var.value)
             ub = value(var.value)
 
-        self._solver_model.addcols(objx=[0.], mstart=[0,0], mrwind=[], dmatval=[], bdl=[lb], bdu=[ub], names=[varname], types=[vartype])
+        #'''
+        xp_var_data = _VariableData() if var_data is None else var_data
+        xp_var_data.add(lb=lb, ub=ub, vartype=vartype, name=varname, idx=self._var_idx_count)
 
-        ## bounds on binary variables don't seem to be set correctly
-        ## by the method above
+        if var_data is None:
+            xp_var_data.store_in_xpress(self._solver_model)
+
+        '''
+        self._solver_model.addcols(objx=[0.], mstart=[0,0], mrwind=[], dmatval=[], 
+                                    bdl=[lb], bdu=[ub], names=[varname], types=[vartype])
         if vartype == 'B' and (lb > 0 or ub < 1):
-            idx = self._var_idx_count
             if lb == ub:
-                self._solver_model.chgbounds([idx], ['B'], [lb])
+                chgbounds_vals = [lb]
+                chgbounds_type = ['B']
+                chgbounds_idx = [self._var_idx_count]
             else:
-                self._solver_model.chgbounds([idx, idx], ['L', 'U'], [lb,ub])
+                chgbounds_vals = [lb, ub]
+                chgbounds_type = ['L', 'U']
+                chgbounds_idx = [self._var_idx_count, self._var_idx_count]
+
+            self._solver_model.chgbounds(chgbounds_idx, chgbounds_type, chgbounds_vals)
+        '''
 
         self._pyomo_var_to_solver_var_map[var] = varname 
         self._solver_var_to_pyomo_var_map[varname] = var
@@ -317,9 +412,49 @@ class XpressDirect(DirectSolver):
         self._add_block(model)
 
     def _add_block(self, block):
-        DirectOrPersistentSolver._add_block(self, block)
+        var_data = _VariableData()
+        for var in block.component_data_objects(
+                ctype=pyomo.core.base.var.Var,
+                descend_into=True,
+                active=True,
+                sort=True):
+            self._add_var(var, var_data)
+        var_data.store_in_xpress(self._solver_model)
 
-    def _add_constraint(self, con):
+        con_data = _ConstraintData(self._solver_model)
+        for sub_block in block.block_data_objects(descend_into=True,
+                                                  active=True):
+            for con in sub_block.component_data_objects(
+                    ctype=pyomo.core.base.constraint.Constraint,
+                    descend_into=False,
+                    active=True,
+                    sort=True):
+                if (not con.has_lb()) and \
+                   (not con.has_ub()):
+                    assert not con.equality
+                    continue  # non-binding, so skip
+                self._add_constraint(con, con_data)
+
+            for con in sub_block.component_data_objects(
+                    ctype=pyomo.core.base.sos.SOSConstraint,
+                    descend_into=False,
+                    active=True,
+                    sort=True):
+                self._add_sos_constraint(con)
+
+            obj_counter = 0
+            for obj in sub_block.component_data_objects(
+                    ctype=pyomo.core.base.objective.Objective,
+                    descend_into=False,
+                    active=True):
+                obj_counter += 1
+                if obj_counter > 1:
+                    raise ValueError("Solver interface does not "
+                                     "support multiple objectives.")
+                self._set_objective(obj)
+        con_data.store_in_xpress()
+
+    def _add_constraint(self, con, con_data=None):
         if not con.active:
             return None
 
@@ -350,7 +485,7 @@ class XpressDirect(DirectSolver):
         if con.equality:
             x_sense = 'E'
             x_rhs = value(con.lower) - xpress_expr.constant
-            x_range = None
+            x_range = 0.
 
         elif con.has_lb() and con.has_ub():
             x_sense = 'R'
@@ -361,32 +496,48 @@ class XpressDirect(DirectSolver):
 
             self._range_constraints.add(conname)
             self._x_range[conname] = x_range
-
-            x_range = [x_range]
+            #x_range = [x_range]
 
         elif con.has_lb():
             x_sense = 'G'
             x_rhs = value(con.lower) - xpress_expr.constant
-            x_range = None
+            x_range = 0.
 
         elif con.has_ub():
             x_sense = 'L'
             x_rhs = value(con.upper) - xpress_expr.constant
-            x_range = None
+            x_range = 0.
 
         else:
             raise ValueError("Constraint does not have a lower "
                              "or an upper bound: {0} \n".format(con))
 
-        self._solver_model.addrows([x_sense], [x_rhs], [0,len(xpress_expr.linear_coefs)],
-                                xpress_expr.linear_vars, xpress_expr.linear_coefs,
-                                range=x_range, names=[conname])
+        #'''
+        xpress_con_data = _ConstraintData(self._solver_model) if con_data is None else con_data
+
+        if xpress_expr.quad_coefs is None:
+            xpress_con_data.add(x_sense, x_rhs, xpress_expr.linear_vars, xpress_expr.linear_coefs,
+                                conname, x_range)
+
+        else:
+            if x_sense in ['R', 'E']:
+                raise RuntimeError("Xpress does not support range or equality quadratic constraints.")
+            xpress_con_data.add(x_sense, x_rhs, xpress_expr.linear_vars, xpress_expr.linear_coefs,
+                                conname, x_range, self._con_idx_count, xpress_expr.quad_vars_1,
+                                xpress_expr.quad_vars_2, xpress_expr.quad_coefs)
+
+        if con_data is None:
+            xpress_con_data.store_in_xpress()
+        '''
+        self._solver_model.addrows([x_sense], [x_rhs], [0,len(xpress_expr.linear_vars)], 
+                                    xpress_expr.linear_vars, xpress_expr.linear_coefs,
+                                    range=x_range, names=[conname])
 
         if xpress_expr.quad_coefs is not None:
             if x_sense in ['R', 'E']:
                 raise RuntimeError("Xpress does not support range or equality quadratic constraints.")
-            self._solver_model.addqmatrix(self._con_idx_count, xpress_expr.quad_vars_1,
-                                     xpress_expr.quad_vars_2, xpress_expr.quad_coefs)
+            self._solver_model.addqmatrix(self._con_idx_count, xpress_expr.quad_vars_1, xpress_expr.quad_vars_2, xpress_expr.quad_coefs)
+        #'''
 
         for var in referenced_vars:
             self._referenced_variables[var] += 1
@@ -407,8 +558,8 @@ class XpressDirect(DirectSolver):
             raise ValueError("Solver does not support SOS "
                              "level {0} constraints".format(level))
 
-        xpress_vars = []
-        weights = []
+        xpress_vars = list()
+        weights = list()
 
         self._vars_referenced_by_con[con] = ComponentSet()
 
