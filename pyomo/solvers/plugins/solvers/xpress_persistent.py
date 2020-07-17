@@ -48,13 +48,8 @@ class XpressPersistent(PersistentSolver, XpressDirect):
             self.set_instance(self._pyomo_model, **kwds)
 
     def _remove_constraint(self, solver_con):
-        pyomo_con = self._solver_con_to_pyomo_con_map[solver_con]
-        solver_con_idx = self._pyomo_con_to_con_idx_map[pyomo_con]
-        for temp_con, temp_idx in self._pyomo_con_to_con_idx_map.items():
-            if temp_idx > solver_con_idx:
-                self._pyomo_con_to_con_idx_map[temp_con] -= 1
         self._con_idx_count -= 1
-        del self._pyomo_con_to_con_idx_map[pyomo_con]
+        solver_con_idx = self._solver_model.getIndexFromName(1,solver_con)
         self._solver_model.delConstraint(solver_con_idx)
 
     def _remove_sos_constraint(self, solver_sos):

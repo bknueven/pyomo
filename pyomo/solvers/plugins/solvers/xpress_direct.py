@@ -154,9 +154,8 @@ class XpressDirect(DirectSolver):
 
         self._pyomo_var_to_var_idx_map = ComponentMap()
         self._var_idx_count = 0
-
-        self._pyomo_con_to_con_idx_map = dict()
         self._con_idx_count = 0
+
         self._pyomo_sos_to_sos_idx_map = dict()
         self._sos_idx_count = 0
 
@@ -187,8 +186,7 @@ class XpressDirect(DirectSolver):
             print("Import of xpress failed - xpress message=" + str(e) + "\n")
             self._python_api_exists = False
             
-        self._range_constraints = set()
-        self._x_range = dict()
+        self._range_constraints = dict()
 
         # TODO: this isn't a limit of XPRESS, which implements an SLP
         #       method for NLPs. But it is a limit of *this* interface
@@ -383,7 +381,7 @@ class XpressDirect(DirectSolver):
         self._referenced_variables[var] = 0
 
     def _set_instance(self, model, kwds={}):
-        self._range_constraints = set()
+        self._range_constraints = dict()
         DirectOrPersistentSolver._set_instance(self, model, kwds)
         self._pyomo_var_to_solver_var_map = ComponentMap()
         self._solver_var_to_pyomo_var_map = dict()
@@ -392,7 +390,6 @@ class XpressDirect(DirectSolver):
 
         self._pyomo_var_to_var_idx_map = ComponentMap()
         self._var_idx_count = 0
-        self._pyomo_con_to_con_idx_map = dict()
         self._con_idx_count = 0
         self._pyomo_sos_to_sos_idx_map = dict()
         self._sos_idx_count = 0
@@ -494,8 +491,7 @@ class XpressDirect(DirectSolver):
             x_rhs = ub - xpress_expr.constant
             x_range = ub - lb
 
-            self._range_constraints.add(conname)
-            self._x_range[conname] = x_range
+            self._range_constraints[conname] = x_range
             #x_range = [x_range]
 
         elif con.has_lb():
@@ -545,7 +541,7 @@ class XpressDirect(DirectSolver):
         self._pyomo_con_to_solver_con_map[con] = conname 
         self._solver_con_to_pyomo_con_map[conname] = con
 
-        self._pyomo_con_to_con_idx_map[con] = self._con_idx_count
+        #self._pyomo_con_to_con_idx_map[con] = self._con_idx_count
         self._con_idx_count += 1
 
     def _add_sos_constraint(self, con):
@@ -870,7 +866,7 @@ class XpressDirect(DirectSolver):
                             soln_variables[xpress_var]["Rc"] = val
 
                 if extract_duals or extract_slacks:
-                    if self._pyomo_con_to_con_idx_map:
+                    if self._pyomo_con_to_solver_con_map:
                         con_names = xprob.getnamelist(1)
                     else:
                         con_names = list()
@@ -884,11 +880,12 @@ class XpressDirect(DirectSolver):
 
                 if extract_slacks:
                     vals = xprob.getSlack()
+                    range_constraints = self._range_constraints
                     for con, val in zip(con_names, vals):
-                        if con in self._range_constraints:
+                        if con in range_constraints:
                             ## for xpress, the slack on a range constraint
                             ## is based on the upper bound
-                            x_range = self._x_range[con]
+                            x_range = range_constraints[con]
                             ub_s = val
                             lb_s = val - x_range
                             if abs(ub_s) > abs(lb_s):
@@ -965,12 +962,11 @@ class XpressDirect(DirectSolver):
     def _load_duals(self, cons_to_load=None):
         if not hasattr(self._pyomo_model, 'dual'):
             self._pyomo_model.dual = Suffix(direction=Suffix.IMPORT)
-        con_map = self._pyomo_con_to_con_idx_map
+        con_map = self._pyomo_con_to_solver_con_map
         dual = self._pyomo_model.dual
 
         if cons_to_load is None:
             cons_to_load = con_map.keys()
-
         xpress_cons_to_load = [con_map[pyomo_con] for pyomo_con in cons_to_load]
         vals = self._solver_model.getDual(xpress_cons_to_load)
 
@@ -980,12 +976,11 @@ class XpressDirect(DirectSolver):
     def _load_slacks(self, cons_to_load=None):
         if not hasattr(self._pyomo_model, 'slack'):
             self._pyomo_model.slack = Suffix(direction=Suffix.IMPORT)
-        con_map = self._pyomo_con_to_con_idx_map
+        con_map = self._pyomo_con_to_solver_con_map
         slack = self._pyomo_model.slack
 
         if cons_to_load is None:
             cons_to_load = con_map.keys()
-
         xpress_cons_to_load = [con_map[pyomo_con] for pyomo_con in cons_to_load]
         vals = self._solver_model.getSlack(xpress_cons_to_load)
         range_constraints = self._range_constraints
@@ -994,7 +989,7 @@ class XpressDirect(DirectSolver):
             if xpress_con in range_constraints:
                 ## for xpress, the slack on a range constraint
                 ## is based on the upper bound
-                x_range = self._x_range[con]
+                x_range = range_constraints[con]
                 ub_s = val
                 lb_s = val - x_range
                 if abs(ub_s) > abs(lb_s):
