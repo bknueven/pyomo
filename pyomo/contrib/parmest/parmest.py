@@ -311,12 +311,12 @@ class Estimator(object):
         self.model_function = model_function
 
         assert isinstance(data, (list, pd.DataFrame)), "Data must be a list or DataFrame"
-        # convert dataframe into a list of dataframes, each row = one scenario
+        # convert dataframe into a list of series, each row = one scenario
         if isinstance(data, pd.DataFrame):
-            self.callback_data = [data.loc[i,:].to_frame().transpose() for i in data.index]
+            self.callback_data = [row for idx, row in data.iterrows()]
         else:
             self.callback_data = data
-        assert isinstance(self.callback_data[0], (dict, pd.DataFrame, str)), "The scenarios in data must be a dictionary, DataFrame or filename"
+        assert isinstance(self.callback_data[0], (dict, pd.Series, str)), "The scenarios in data must be a dictionary, DataFrame or filename"
 
         if len(theta_names) == 0:
             self.theta_names = ['parmest_dummy_var']
@@ -399,7 +399,7 @@ class Estimator(object):
 
         # cb_data is a list of dictionaries, list of dataframes, OR list of json file names
         exp_data = cb_data[experiment_number]
-        if isinstance(exp_data, (dict, pd.DataFrame)):
+        if isinstance(exp_data, (dict, pd.Series)):
             pass
         elif isinstance(exp_data, str):
             try:
