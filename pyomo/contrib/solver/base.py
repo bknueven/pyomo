@@ -419,12 +419,8 @@ class LegacySolverWrapper:
         ]
         legacy_soln.status = legacy_solution_status_map[results.solution_status]
         legacy_results.solver.termination_message = str(results.termination_condition)
-        legacy_results.problem.number_of_constraints = model.nconstraints()
-        legacy_results.problem.number_of_variables = model.nvariables()
-        number_of_objectives = model.nobjectives()
-        legacy_results.problem.number_of_objectives = number_of_objectives
-        if number_of_objectives == 1:
-            obj = get_objective(model)
+        obj = get_objective(model)
+        if obj is not None:
             legacy_results.problem.sense = obj.sense
 
             if obj.sense == minimize:
